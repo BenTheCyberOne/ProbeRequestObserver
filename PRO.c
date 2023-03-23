@@ -1,6 +1,6 @@
 /*
 Author: BenTheCyberOne
-Current Version: 1.0.0
+Current Version: 1.1.0
 Blog: https://thissiteissafe.com
 
 Compile Instructions:
@@ -15,10 +15,12 @@ gcc PRO.c -o PRO -lpcap -lsqlite3
 #include <unistd.h>
 #include <signal.h>
 #include <sqlite3.h>
-
+#include <time.h>
 //Channel hopping interval
 #define HOP_INT 3
 
+//Number of request records to show
+#define DISP_NUM 20
 
 
 void packetHandler(u_char *userData, const struct pcap_pkthdr* pkthdr, const u_char* packet);
@@ -41,20 +43,24 @@ void alarm_handler(int sig){
 int main(int argc, char *argv[]) {
     char *device;
     char errorBuffer[PCAP_ERRBUF_SIZE];
-
+    int rst_tables = 0;
     sqlite3 *db;
     char *db_err = 0;
     int rc;
 
     // Check for the device name argument
-    if (argc != 2) {
-        printf("Usage: read-probe <device>\n");
+    if (argc < 2 || argc > 3) {
+        printf("Usage: ./PRO <device in monitor mode> [--new-db]\n");
         return 1;
     }
 
     // Set the device name
     device = argv[1];
-
+    if(argc > 2){
+        if(strcmp(argv[2], "--new-db") == 0){
+            rst_tables = 1;
+        }
+    }
     // Open the device
     handle = pcap_open_live(device, BUFSIZ, 1, 500, errorBuffer);
     if (handle == NULL) {
@@ -66,15 +72,29 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Cannot open database: %s\n", sqlite3_errmsg(db));
         sqlite3_close(db);
     }
-    char *create_init_table_sql = "CREATE TABLE IF NOT EXISTS requests (id INTEGER PRIMARY KEY AUTOINCREMENT, mac_addr TEXT, ssid TEXT, pwr INTEGER, timestamp DATETIME);";
-    rc = sqlite3_exec(db, create_init_table_sql, 0, 0, &db_err);
+    if(rst_tables == 0){
+        char *create_init_table_sql = "CREATE TABLE IF NOT EXISTS requests (id INTEGER PRIMARY KEY AUTOINCREMENT, mac_addr TEXT, ssid TEXT, pwr INTEGER, timestamp DATETIME);";
+        rc = sqlite3_exec(db, create_init_table_sql, 0, 0, &db_err);
 
-    if(rc != SQLITE_OK){
-        fprintf(stderr, "SQL ERR: %s\n", db_err);
-        sqlite3_free(db_err);
+        if(rc != SQLITE_OK){
+            fprintf(stderr, "SQL ERR: %s\n", db_err);
+            sqlite3_free(db_err);
+        }
+        else{
+            printf("SQLite database connected successfully\n");
+        }
     }
-    else{
-        printf("Created table successfully\n");
+    else if(rst_tables == 1){
+        char *create_init_table_sql = "DROP TABLE IF EXISTS requests; CREATE TABLE IF NOT EXISTS requests (id INTEGER PRIMARY KEY AUTOINCREMENT, mac_addr TEXT, ssid TEXT, pwr INTEGER, timestamp DATETIME);";
+        rc = sqlite3_exec(db, create_init_table_sql, 0, 0, &db_err);
+
+        if(rc != SQLITE_OK){
+            fprintf(stderr, "SQL ERR: %s\n", db_err);
+            sqlite3_free(db_err);
+        }
+        else{
+            printf("SQLite database connected successfully\n");
+        }
     }
     struct pcap_args args;
     args.db = db;
@@ -104,7 +124,11 @@ int main(int argc, char *argv[]) {
         }
         char channel_cmd[64];
         sprintf(channel_cmd, "iwconfig %s channel %d", device, channel);
-        system(channel_cmd);
+        int cmd_rt = system(channel_cmd);
+        if(cmd_rt == -1){
+            printf("Failed to run the iwconfig command to change channels. Are you running as root?\n");
+            break;
+        }
         //printf("Just changed channel to: %d\n", channel);
 
         //usleep(500 * 1000);
@@ -132,7 +156,9 @@ void displayData(const u_char* packet, int count, sqlite3 *db){
     //printf("\033[0;0H");
     //sqlite3 *db = db;
     char *db_err;
-    char sql[] = "SELECT mac_addr AS MAC, ssid AS SSID, pwr AS PWR FROM requests ORDER BY pwr DESC LIMIT 20;";
+    char sql[1024];
+    snprintf(sql, sizeof(sql), "SELECT mac_addr AS MAC, ssid AS SSID, pwr AS PWR, timestamp AS TIMESTAMP FROM requests ORDER BY timestamp DESC LIMIT %d;",DISP_NUM);
+    //char sql[] = "SELECT mac_addr AS MAC, ssid AS SSID, pwr AS PWR FROM requests ORDER BY pwr DESC LIMIT 20;";
     //snprintf(sql, sizeof(sql), "INSERT INTO requests (mac_addr, ssid, pwr, timestamp) VALUES ('%02X:%02X:%02X:%02X:%02X:%02X','%s',%hhd,%ld);",packet[28],packet[29],packet[30],packet[31],packet[32],packet[33], ssid, pwr, pkthdr->ts.tv_sec);
     printf("\033[2J");
     printf("\033[0;0H");
@@ -216,7 +242,13 @@ void packetHandler(u_char *userData, const struct pcap_pkthdr* pkthdr, const u_c
             }
             ssid[ssid_length + 1] = '\0';
             //unsigned char pwr = packet[14];
-            snprintf(sql, sizeof(sql), "INSERT INTO requests (mac_addr, ssid, pwr, timestamp) VALUES ('%02X:%02X:%02X:%02X:%02X:%02X','%s',%hhd,%ld);",packet[28],packet[29],packet[30],packet[31],packet[32],packet[33], ssid, pwr, pkthdr->ts.tv_sec);
+            //char* timestamp = pkthdr->ts.tv_sec;
+            time_t timestamp_time = pkthdr->ts.tv_sec;
+            struct tm* time_info = gmtime(&timestamp_time);
+            char datetime[20];
+            strftime(datetime, 20, "%Y-%m-%d %H:%M:%S", time_info);
+
+            snprintf(sql, sizeof(sql), "INSERT INTO requests (mac_addr, ssid, pwr, timestamp) VALUES ('%02X:%02X:%02X:%02X:%02X:%02X','%s',%hhd,'%s');",packet[28],packet[29],packet[30],packet[31],packet[32],packet[33], ssid, pwr, datetime);
             //printf("going to run this sql command: %s\n", sql);
             int ret = sqlite3_exec(db, sql, NULL, NULL, &db_err);
             if(ret != SQLITE_OK){
@@ -227,7 +259,12 @@ void packetHandler(u_char *userData, const struct pcap_pkthdr* pkthdr, const u_c
         else{
             char ssid[] = "Wildcard *";
             unsigned char pwr = packet[14];
-            snprintf(sql, sizeof(sql), "INSERT INTO requests (mac_addr, ssid, pwr, timestamp) VALUES ('%02X:%02X:%02X:%02X:%02X:%02X','%s',%hhd,%ld);",packet[28],packet[29],packet[30],packet[31],packet[32],packet[33], ssid, pwr, pkthdr->ts.tv_sec);
+            time_t timestamp_time = pkthdr->ts.tv_sec;
+            struct tm* time_info = gmtime(&timestamp_time);
+            char datetime[20];
+            strftime(datetime, 20, "%Y-%m-%d %H:%M:%S", time_info);
+            snprintf(sql, sizeof(sql), "INSERT INTO requests (mac_addr, ssid, pwr, timestamp) VALUES ('%02X:%02X:%02X:%02X:%02X:%02X','%s',%hhd,'%s');",packet[28],packet[29],packet[30],packet[31],packet[32],packet[33], ssid, pwr, datetime);
+            //snprintf(sql, sizeof(sql), "INSERT INTO requests (mac_addr, ssid, pwr, timestamp) VALUES ('%02X:%02X:%02X:%02X:%02X:%02X','%s',%hhd,%ld);",packet[28],packet[29],packet[30],packet[31],packet[32],packet[33], ssid, pwr, pkthdr->ts.tv_sec);
             //printf("going to run this sql command: %s\n", sql);
             int ret = sqlite3_exec(db, sql, NULL, NULL, &db_err);
             if(ret != SQLITE_OK){
