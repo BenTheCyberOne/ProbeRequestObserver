@@ -16,5 +16,6 @@ Currently, PRO can be compiled by simply running:
 
 # Usage
 
-    sudo ./PRO <device in monitor mode>
+    sudo ./PRO <device in monitor mode> [--new-db]
    PRO requires sudo privileges in order to set the selected device's channel every few seconds. This ensures PRO sniffs the common 2.4GHz channels for any possible probe requests.
+   The optional --new-db argument drops the requests table in the SQLite3 db file, allowing you to start fresh!
