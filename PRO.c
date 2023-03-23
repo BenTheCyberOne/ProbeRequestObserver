@@ -240,7 +240,7 @@ void packetHandler(u_char *userData, const struct pcap_pkthdr* pkthdr, const u_c
             for(int i = 0; i < ssid_length; i++){
                 ssid[i] = packet[44 + i];
             }
-            ssid[ssid_length + 1] = '\0';
+            //ssid[ssid_length + 1] = '\0';
             //unsigned char pwr = packet[14];
             //char* timestamp = pkthdr->ts.tv_sec;
             time_t timestamp_time = pkthdr->ts.tv_sec;
